@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>go-ledger — idempotent payments + double-entry ledger in Go</title>
+<meta name="description" content="A compact, tested Go service for idempotent payment intents and double-entry ledger postings.">
+<style>
+  :root{
+    --bg:#070b0b; --panel:#0d1414; --panel2:#101a1a; --ink:#e9f2ef; --muted:#8fa8a3;
+    --line:#1b2a28; --accent:#5eead4; --accent2:#a3e635; --warn:#fbbf24; --max:1080px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink)}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.55;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+  header{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(7,11,11,.88);backdrop-filter:blur(10px);z-index:10}
+  .nav{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .brand{font-weight:800;letter-spacing:-.02em;font-size:18px}
+  .brand span{color:var(--accent)}
+  .nav a{color:var(--muted);font-size:14px;margin-left:20px}
+  .hero{padding:84px 0 56px;border-bottom:1px solid var(--line)}
+  .badge{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;padding:6px 12px;font-size:12px;letter-spacing:.02em}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+  h1{font-size:clamp(38px,6vw,68px);line-height:1.03;letter-spacing:-.045em;margin:20px 0 18px;max-width:900px}
+  h1 em{color:var(--accent);font-style:normal}
+  .lead{font-size:19px;color:var(--muted);max-width:720px;margin:0}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:34px 0 0}
+  .metric{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px}
+  .metric .n{font-size:28px;font-weight:800;letter-spacing:-.03em}
+  .metric .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+  section{padding:54px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:0 0 22px;font-weight:700}
+  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .card .k{color:var(--accent);font-weight:800;font-size:12px;letter-spacing:.1em}
+  .card h3{margin:6px 0 6px;font-size:17px;letter-spacing:-.01em}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+  pre{background:#050808;border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;color:#cfe9e3}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+  .honesty{background:#141006;border:1px solid #3a2f14;border-radius:14px;padding:20px 22px;color:#f0e4c3}
+  .honesty b{color:var(--warn)}
+  .cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px}
+  .btn{display:inline-block;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:11px 16px;border-radius:10px;font-weight:600;font-size:14px}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#03110e}
+  footer{padding:34px 0 60px;color:var(--muted);font-size:13px}
+  footer .row{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  @media(max-width:860px){.metrics,.grid2{grid-template-columns:1fr}.nav a{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <div class="brand">go<span>·</span>ledger</div>
+    <nav>
+      <a href="#invariants">Invariants</a>
+      <a href="#api">API</a>
+      <a href="#limits">Limits</a>
+      <a href="https://github.com/itsoumya-d/go-ledger">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="badge"><span class="dot"></span> Reference implementation · Go 1.22 · zero external dependencies</div>
+    <h1>Payments correctness, made <em>inspectable</em>.</h1>
+    <p class="lead">A compact Go service for idempotent payment intents and double-entry ledger postings. The point is the invariants: replay-safe creation, capture-once under concurrency, postings that sum to zero, and a failed capture that leaves state untouched.</p>
+    <div class="metrics">
+      <div class="metric"><div class="n">6</div><div class="l">Tests</div></div>
+      <div class="metric"><div class="n">10→1</div><div class="l">Concurrent captures → one posting pair</div></div>
+      <div class="metric"><div class="n">0</div><div class="l">External Go deps</div></div>
+      <div class="metric"><div class="n">green</div><div class="l">CI: test -race, vet, build</div></div>
+    </div>
+  </div>
+
+  <section id="invariants">
+    <h2>The invariants</h2>
+    <div class="grid2">
+      <div class="card"><div class="k">01 / IDEMPOTENCY</div><h3>Replay-safe creation</h3><p>Same <code>Idempotency-Key</code> + same payload returns the original intent. Same key + different payload returns <b>409</b>.</p></div>
+      <div class="card"><div class="k">02 / DOUBLE ENTRY</div><h3>Postings sum to zero</h3><p>Capture writes a debit and a credit. The customer balance decreases; the merchant settlement balance increases by the same amount.</p></div>
+      <div class="card"><div class="k">03 / CONCURRENCY</div><h3>Capture exactly once</h3><p>Ten concurrent captures produce exactly one posting pair. The second through tenth calls see “captured” and return the intent.</p></div>
+      <div class="card"><div class="k">04 / FAILURE</div><h3>Insufficient funds is a no-op</h3><p>A failed capture leaves balances and postings untouched. The intent stays in <code>requires_capture</code>.</p></div>
+    </div>
+  </section>
+
+  <section id="api">
+    <h2>API in four calls</h2>
+<pre><code># fund an account (dev helper)
+curl -s -X POST localhost:8080/v1/accounts/customer_a/fund \
+  -H 'Content-Type: application/json' \
+  -d '{"amount_cents":1000}'
+
+# create an intent (idempotent)
+curl -s -X POST localhost:8080/v1/payment_intents \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-42' \
+  -d '{"account_id":"customer_a","amount_cents":400,"currency":"USD"}'
+
+# capture
+curl -s -X POST localhost:8080/v1/payment_intents/pi_1/capture
+
+# balance
+curl -s localhost:8080/v1/accounts/customer_a/balance</code></pre>
+  </section>
+
+  <section id="limits">
+    <h2>What this is not</h2>
+    <div class="honesty">
+      <b>Not production.</b> The store is in-memory; state is lost on restart. <b>No auth, no PCI scope, no real money.</b> <b>No persistence or FX.</b> A production version needs the idempotency index and postings in one transactional store with a unique constraint on the key, plus a real ledger schema, reconciliation and settlement files. The interesting parts are <code>CreateIntent</code>, <code>Capture</code>, and the concurrency test — not the HTTP wrapper.
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/itsoumya-d/go-ledger">View the code</a>
+      <a class="btn" href="https://github.com/itsoumya-d/go-ledger/blob/main/README.md">Read the README</a>
+      <a class="btn" href="https://itsoumya-d.github.io/complaintgraph/">ComplaintGraph live page</a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap row">
+    <div>Built by <a href="https://github.com/itsoumya-d">Soumya Debnath</a> · <a href="mailto:soumyadebnath1619@gmail.com">soumyadebnath1619@gmail.com</a></div>
+    <div>Reference implementation, not a production payment system.</div>
+  </div>
+</footer>
+</body>
+</html>
