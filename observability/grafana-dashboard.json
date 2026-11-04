@@ -1,0 +1,32 @@
+{
+  "title": "go-ledger",
+  "uid": "go-ledger-slo",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request rate by route",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(rate(ledger_http_requests_total[5m])) by (route)", "legendFormat": "{{route}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx error rate",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum(rate(ledger_http_requests_total{status=~\"5..\"}[5m]))", "legendFormat": "5xx" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "p99 latency",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "histogram_quantile(0.99, sum(rate(ledger_http_request_duration_seconds_bucket[5m])) by (le, route))", "legendFormat": "{{route}}" }]
+    },
+    {
+      "type": "stat",
+      "title": "Event bus backlog",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{ "expr": "avg(gcp_pubsub_subscription_num_undelivered_messages)", "legendFormat": "backlog" }]
+    }
+  ]
+}
