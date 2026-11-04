@@ -1,0 +1,67 @@
+{
+  "title": "go-ledger — SLO and event bus",
+  "description": "Request rate, error rate, p99 latency, event bus backlog and audit health for the go-ledger reference service.",
+  "layout_type": "ordered",
+  "widgets": [
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Request rate by route",
+        "requests": [
+          {
+            "q": "sum:ledger_http_requests_total{*}.as_rate() by {route}",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "5xx error rate",
+        "requests": [
+          {
+            "q": "sum:ledger_http_requests_total{status:5*}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "p99 latency",
+        "requests": [
+          {
+            "q": "p99:ledger_http_request_duration_seconds{*} by {route}",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Event bus backlog",
+        "requests": [
+          {
+            "q": "avg:gcp.pubsub.subscription.num_undelivered_messages{*}",
+            "aggregator": "avg"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Audit rows written (5m)",
+        "requests": [
+          {
+            "q": "sum:postgresql.rows_inserted{db:ledger,table:ledger_audit_events}.as_count()",
+            "aggregator": "sum"
+          }
+        ]
+      }
+    }
+  ]
+}
