@@ -44,6 +44,51 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+  web-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cypress-io/github-action@v6
+        with:
+          working-directory: web
+          build: npm run build
+          start: npm run preview
+          wait-on: "http://localhost:4173"
+          install: true
+
+  db-matrix:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ledger
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: ledger
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client default-mysql-client
+      - run: PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d ledger -c "SELECT 1"
+      - run: mysql -h 127.0.0.1 -uroot -proot ledger -e "SELECT 1"
+
   terraform:
     runs-on: ubuntu-latest
     strategy:
