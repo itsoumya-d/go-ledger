@@ -46,15 +46,28 @@ jobs:
 
   web-e2e:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: cypress-io/github-action@v6
+      - uses: actions/setup-node@v4
         with:
-          working-directory: web
-          build: npm run build
-          start: npm run preview -- --host 127.0.0.1
-          wait-on: "http://127.0.0.1:4173"
-          install: true
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Run Cypress against the preview server
+        run: |
+          npm run preview -- --host 127.0.0.1 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4173/ >/dev/null; then break; fi
+            sleep 1
+          done
+          npx cypress run
+          kill $SERVER_PID
 
   db-matrix:
     runs-on: ubuntu-latest
