@@ -1,0 +1,38 @@
+:root {
+  --ink: #101828;
+  --muted: #475467;
+  --line: #d0d5dd;
+  --surface: #ffffff;
+  --canvas: #f7f8fa;
+  --brand: #067647;
+  --danger: #b42318;
+  --radius: 14px;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+.shell { max-width: 980px; margin: 0 auto; padding: 48px 24px 64px; }
+.hero { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+.eyebrow { margin: 0 0 8px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--brand); font-weight: 700; }
+h1 { margin: 0 0 10px; font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.03em; }
+.lede { margin: 0; max-width: 620px; color: var(--muted); line-height: 1.6; }
+.status { border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; font-size: 12px; white-space: nowrap; background: var(--surface); }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 28px 0 18px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+.label { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.value { margin: 0; font-size: 28px; font-weight: 750; letter-spacing: -0.02em; }
+.hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-top: 16px; }
+.panel-head { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin-bottom: 12px; }
+.panel-head h2 { margin: 0; font-size: 17px; }
+.panel-head span { font-size: 12px; color: var(--muted); }
+.chart { width: 100%; height: auto; display: block; }
+.endpoints { margin: 0; padding-left: 18px; line-height: 1.9; color: var(--muted); }
+code { font-family: "SFMono-Regular", ui-monospace, Menlo, monospace; font-size: 12px; background: #eef2f6; border-radius: 5px; padding: 2px 5px; color: var(--ink); }
+@media (max-width: 760px) {
+  .hero { flex-direction: column; }
+  .cards { grid-template-columns: 1fr; }
+}
