@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -35,11 +36,34 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, ErrInsufficientFunds):
 		status = http.StatusUnprocessableEntity
+	case errors.Is(err, ErrUnauthorized):
+		status = http.StatusUnauthorized
+	case errors.Is(err, ErrConsentNotFound), errors.Is(err, ErrPaymentNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, ErrConsentNotAuthorised):
+		status = http.StatusForbidden
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
 func newServer(store *Store) http.Handler {
+	bus := NewEventBusFromEnv(context.Background())
+	var audit *PostgresAuditStore
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		if store, err := NewPostgresAuditStore(dsn); err == nil {
+			if err := store.Init(context.Background()); err == nil {
+				audit = store
+				log.Printf("audit store: PostgreSQL enabled")
+			} else {
+				log.Printf("audit store: PostgreSQL init failed: %v", err)
+			}
+		} else {
+			log.Printf("audit store: PostgreSQL unavailable: %v", err)
+		}
+	}
+	openBanking := NewOpenBankingService(store, bus, audit)
+	metrics := NewMetrics()
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /v1/accounts/{accountID}/fund", func(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +120,11 @@ func newServer(store *Store) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	return mux
+	mux.Handle("/graphql", graphQLHandler(store))
+	mux.Handle("/openbanking/", openBankingHandler(openBanking))
+	mux.Handle("/metrics", metrics.Handler())
+
+	return metrics.Middleware(mux)
 }
 
 func main() {
