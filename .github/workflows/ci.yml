@@ -52,8 +52,8 @@ jobs:
         with:
           working-directory: web
           build: npm run build
-          start: npm run preview
-          wait-on: "http://localhost:4173"
+          start: npm run preview -- --host 127.0.0.1
+          wait-on: "http://127.0.0.1:4173"
           install: true
 
   db-matrix:
