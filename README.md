@@ -127,18 +127,21 @@ EVENT_BUS=azure \
 
 GitHub Actions runs:
 
-- `go test -race ./...`
+- `go test -race -coverprofile=coverage.out -covermode=atomic ./...` with a **56%** statement gate
 - `go vet ./...`
 - `go build ./...`
 - `govulncheck ./...`
 - Docker build
 - `terraform fmt -check` and `terraform validate` for the GCP, Azure, and AWS stacks
+- The PostgreSQL audit-store round trip against a real `postgres:16` service
 
 ## Test coverage
 
-13 Go tests cover idempotency, double-entry postings, insufficient funds, concurrent capture, the
-HTTP flow, validation, Open Banking consent/payment/idempotency, GraphQL, Prometheus, and the event
-bus.
+18 Go tests cover idempotency, double-entry postings, insufficient funds, concurrent capture, the
+HTTP flow, validation, Open Banking consent/payment/idempotency and GET endpoints, GraphQL,
+Prometheus, the event bus, and the PostgreSQL audit store. Local statement coverage is **57.9%**;
+CI fails below 56%. The coverage number is deliberately published as a floor, not a quality claim:
+the in-memory ledger, cloud event-bus adapters, and `main` remain the largest uncovered areas.
 
 ## Limitations
 
@@ -154,3 +157,7 @@ bus.
 If you are evaluating this for a payments or platform role, the interesting parts are
 `CreateIntent`, `Capture`, `OpenBankingService.CreatePayment`, the concurrency test, and the
 Kubernetes/Terraform evidence — not the HTTP wrapper.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
