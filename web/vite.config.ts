@@ -1,8 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const apiProxy = {
+  "/v1": "http://127.0.0.1:8080",
+  "/graphql": "http://127.0.0.1:8080",
+  "/metrics": "http://127.0.0.1:8080",
+};
+
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173 },
-  preview: { port: 4173 },
+  server: { port: 5173, proxy: apiProxy },
+  preview: { port: 4173, proxy: apiProxy },
 });
