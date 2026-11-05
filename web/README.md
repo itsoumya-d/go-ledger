@@ -1,6 +1,6 @@
 # go-ledger web
 
-A small React + TypeScript + Redux Toolkit + d3 control-plane view over the Go ledger API.
+A small React + TypeScript + Redux Toolkit + d3 control-plane view over the Go ledger API, plus a Devoli-token Usage Rating Studio for tiered billing, proration, GST and ledger posting.
 
 ## Stack
 

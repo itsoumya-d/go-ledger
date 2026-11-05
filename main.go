@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +18,15 @@ type createIntentRequest struct {
 	AccountID   string `json:"account_id"`
 	AmountCents int64  `json:"amount_cents"`
 	Currency    string `json:"currency"`
+}
+
+type createRatedInvoiceRequest struct {
+	AccountID   string `json:"account_id"`
+	PlanID      string `json:"plan_id"`
+	PeriodStart string `json:"period_start"`
+	PeriodEnd   string `json:"period_end"`
+	UsageUnits  int64  `json:"usage_units"`
+	ActiveDays  int    `json:"active_days"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -62,6 +72,7 @@ func newServer(store *Store) http.Handler {
 		}
 	}
 	openBanking := NewOpenBankingService(store, bus, audit)
+	rating := NewRatingService()
 	metrics := NewMetrics()
 
 	mux := http.NewServeMux()
@@ -118,6 +129,58 @@ func newServer(store *Store) http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("GET /v1/plans", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, rating.Plans())
+	})
+
+	mux.HandleFunc("POST /v1/rated_invoices", func(w http.ResponseWriter, r *http.Request) {
+		var req createRatedInvoiceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, ErrInvalid)
+			return
+		}
+		invoice, created, err := rating.CreateInvoice(
+			r.Header.Get("Idempotency-Key"),
+			req.AccountID,
+			req.PlanID,
+			req.PeriodStart,
+			req.PeriodEnd,
+			req.UsageUnits,
+			req.ActiveDays,
+		)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, invoice)
+	})
+
+	mux.HandleFunc("GET /v1/rated_invoices", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, rating.Invoices(r.URL.Query().Get("account_id")))
+	})
+
+	mux.HandleFunc("GET /v1/rated_invoices/{invoiceID}", func(w http.ResponseWriter, r *http.Request) {
+		invoice, ok := rating.Invoice(r.PathValue("invoiceID"))
+		if !ok {
+			writeError(w, fmt.Errorf("%w: rated invoice", ErrNotFound))
+			return
+		}
+		writeJSON(w, http.StatusOK, invoice)
+	})
+
+	mux.HandleFunc("POST /v1/rated_invoices/{invoiceID}/capture", func(w http.ResponseWriter, r *http.Request) {
+		invoice, err := rating.CaptureInvoice(r.PathValue("invoiceID"), store)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, invoice)
 	})
 
 	mux.Handle("/graphql", graphQLHandler(store))

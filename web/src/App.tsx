@@ -3,6 +3,7 @@ import * as d3 from "d3";
 import { useDispatch, useSelector } from "react-redux";
 import { setBalance, setLoading, setOffline } from "./store";
 import type { AppDispatch, RootState } from "./store";
+import { RatingStudio } from "./RatingStudio";
 
 export function App() {
   const dispatch = useDispatch<AppDispatch>();
@@ -107,6 +108,8 @@ export function App() {
         </div>
         <svg ref={chartRef} className="chart" />
       </section>
+
+      <RatingStudio />
 
       <section className="panel">
         <div className="panel-head">
