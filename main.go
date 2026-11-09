@@ -73,9 +73,11 @@ func newServer(store *Store) http.Handler {
 	}
 	openBanking := NewOpenBankingService(store, bus, audit)
 	rating := NewRatingService()
+	loyalty := NewLoyaltyService()
 	metrics := NewMetrics()
 
 	mux := http.NewServeMux()
+	registerLoyaltyRoutes(mux, loyalty)
 
 	mux.HandleFunc("POST /v1/accounts/{accountID}/fund", func(w http.ResponseWriter, r *http.Request) {
 		var req fundRequest
