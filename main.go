@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 )
 
 type fundRequest struct {
@@ -75,9 +76,12 @@ func newServer(store *Store) http.Handler {
 	rating := NewRatingService()
 	loyalty := NewLoyaltyService()
 	metrics := NewMetrics()
+	outboxStore := NewMemoryOutboxStore()
+	outboxDispatcher := NewOutboxDispatcher(outboxStore, bus, metrics)
 
 	mux := http.NewServeMux()
 	registerLoyaltyRoutes(mux, loyalty)
+	registerOutboxRoutes(mux, outboxStore, outboxDispatcher, metrics)
 
 	mux.HandleFunc("POST /v1/accounts/{accountID}/fund", func(w http.ResponseWriter, r *http.Request) {
 		var req fundRequest
@@ -119,6 +123,18 @@ func newServer(store *Store) http.Handler {
 			writeError(w, err)
 			return
 		}
+		_, _ = outboxStore.Enqueue(r.Context(), Event{
+			Type: "payment.captured",
+			ID:   "evt_" + intent.ID,
+			Payload: map[string]any{
+				"intent_id":    intent.ID,
+				"account_id":   intent.AccountID,
+				"amount_cents": intent.AmountCents,
+				"currency":     intent.Currency,
+			},
+			Time: time.Now().UTC(),
+		}, 3)
+		metrics.RecordOutboxEnqueued("payment.captured")
 		writeJSON(w, http.StatusOK, intent)
 	})
 
@@ -182,6 +198,17 @@ func newServer(store *Store) http.Handler {
 			writeError(w, err)
 			return
 		}
+		_, _ = outboxStore.Enqueue(r.Context(), Event{
+			Type: "invoice.captured",
+			ID:   "evt_" + invoice.ID,
+			Payload: map[string]any{
+				"invoice_id": invoice.ID,
+				"account_id": invoice.AccountID,
+				"total":      invoice.TotalCents,
+			},
+			Time: time.Now().UTC(),
+		}, 3)
+		metrics.RecordOutboxEnqueued("invoice.captured")
 		writeJSON(w, http.StatusOK, invoice)
 	})
 
