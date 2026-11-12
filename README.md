@@ -23,6 +23,7 @@ trail.
 - **Observability:** `/metrics` exposes Prometheus counters and latency histograms.
 - **Query surface:** `/graphql` exposes intents, balances, postings, and mutations.
 - **Usage rating:** marginal tiers, included allowance, proration, GST and idempotent invoice generation; invoices post to the double-entry ledger exactly once.
+- **Transactional Outbox & DLQ:** payment captures and invoice settlements atomically enqueue typed domain events into a transactional outbox with at-least-once delivery, exponential-backoff retries, dead-letter queue (DLQ) quarantine, manual replay endpoints, and Prometheus metrics (`ledger_outbox_*`).
 - **Gaming loyalty:** idempotent point earn/redeem (by `event_id` / `Idempotency-Key`), derived balances, deterministic leaderboard, and prefix search over an in-memory player projection; every earn/redeem appends an audit entry.
 - **Deployment evidence:** Kubernetes manifests (HPA, PDB, NetworkPolicy, ServiceMonitor) and
   Terraform reference stacks for GCP, Azure, and AWS.
@@ -146,6 +147,29 @@ curl -s 'localhost:8080/v1/loyalty/leaderboard?limit=5'
 # player search (prefix on name, optional game/level filter)
 curl -s 'localhost:8080/v1/search/players?q=alice&game_id=justdice'
 curl -s 'localhost:8080/v1/search/players?q=ali&level=5'
+```
+
+## Transactional Outbox & DLQ
+
+To prevent dual-write anomalies across distributed microservices, state mutations atomically enqueue events into a transactional outbox. A background or on-demand dispatcher flushes events to the message broker (`EventBus`) with exponential backoff and dead-letter queue (DLQ) quarantine:
+
+```bash
+# enqueue an event
+curl -s -X POST localhost:8080/v1/outbox/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"patient.appointment_booked","payload":{"practice_id":"p101","patient_id":"pat_202"},"max_attempts":3}'
+
+# flush pending events to the event bus
+curl -s -X POST localhost:8080/v1/outbox/flush
+
+# inspect outbox statistics (enqueued, pending, published, dead-letter, retries)
+curl -s localhost:8080/v1/outbox/stats
+
+# inspect dead-lettered events
+curl -s localhost:8080/v1/outbox/dead_letters
+
+# replay a quarantined dead-letter event
+curl -s -X POST localhost:8080/v1/outbox/dead_letters/{id}/replay
 ```
 
 ## Architecture
