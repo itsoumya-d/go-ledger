@@ -2,7 +2,7 @@
 
 **Live page:** https://itsoumya-d.github.io/go-ledger/
 
-**A compact, tested Go service for idempotent payment intents, double-entry ledger postings, Open Banking flows, and telco usage rating.**
+**A compact, tested Go service for idempotent payment intents, double-entry ledger postings, Open Banking flows, telco usage rating, and gaming-loyalty rewards.**
 
 This is a reference implementation, not a production payment system. It exists to make the
 financial-correctness ideas concrete: idempotency keys, double-entry postings, insufficient-funds
@@ -23,6 +23,8 @@ trail.
 - **Observability:** `/metrics` exposes Prometheus counters and latency histograms.
 - **Query surface:** `/graphql` exposes intents, balances, postings, and mutations.
 - **Usage rating:** marginal tiers, included allowance, proration, GST and idempotent invoice generation; invoices post to the double-entry ledger exactly once.
+- **Transactional Outbox & DLQ:** payment captures and invoice settlements atomically enqueue typed domain events into a transactional outbox with at-least-once delivery, exponential-backoff retries, dead-letter queue (DLQ) quarantine, manual replay endpoints, and Prometheus metrics (`ledger_outbox_*`).
+- **Gaming loyalty:** idempotent point earn/redeem (by `event_id` / `Idempotency-Key`), derived balances, deterministic leaderboard, and prefix search over an in-memory player projection; every earn/redeem appends an audit entry.
 - **Deployment evidence:** Kubernetes manifests (HPA, PDB, NetworkPolicy, ServiceMonitor) and
   Terraform reference stacks for GCP, Azure, and AWS.
 
@@ -100,6 +102,76 @@ curl -s -X POST localhost:8080/v1/rated_invoices \
   -d '{"account_id":"customer_demo","plan_id":"wholesale_100","period_start":"2026-11-01","period_end":"2026-11-30","usage_units":1200,"active_days":30}'
 ```
 
+## Gaming loyalty
+
+Rewards, idempotency, leaderboard, and search. Earn/redeem are idempotent by
+`event_id` (or the `Idempotency-Key` header when `event_id` is omitted): a replay
+returns the stored balance with no double-credit, and reusing an id with a
+different payload returns `409`. Points must be positive; redeeming more than
+the balance returns `422` and leaves the balance untouched. The leaderboard is
+sorted by balance descending with `user_id` ascending as a deterministic
+tie-break. Player search does a case-insensitive prefix match on name with
+optional `game_id` / `level` filters (empty `q` returns all players up to
+`limit`). Every successful earn/redeem appends an audit entry; replays and
+rejected redeems do not.
+
+The ElasticSearch projection is an in-memory reference implementation, not a
+live search cluster.
+
+```bash
+# earn points (idempotent by event_id)
+curl -s -X POST localhost:8080/v1/loyalty/earn \
+  -H 'Content-Type: application/json' \
+  -d '{"event_id":"evt_1","user_id":"user_001","game_id":"justdice","points":100}'
+curl -s -X POST localhost:8080/v1/loyalty/earn \
+  -H 'Content-Type: application/json' \
+  -d '{"event_id":"evt_1","user_id":"user_001","game_id":"justdice","points":100}'
+# replay: {"event_id":"evt_1",...,"balance":100,"replayed":true} — no double-credit
+
+# earn via Idempotency-Key header
+curl -s -X POST localhost:8080/v1/loyalty/earn \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: key-earn-1' \
+  -d '{"user_id":"user_001","game_id":"justdice","points":50}'
+
+# redeem points
+curl -s -X POST localhost:8080/v1/loyalty/redeem \
+  -H 'Content-Type: application/json' \
+  -d '{"event_id":"redeem_1","user_id":"user_001","game_id":"justdice","points":40}'
+
+# balance
+curl -s 'localhost:8080/v1/loyalty/balance?user_id=user_001'
+
+# leaderboard
+curl -s 'localhost:8080/v1/loyalty/leaderboard?limit=5'
+
+# player search (prefix on name, optional game/level filter)
+curl -s 'localhost:8080/v1/search/players?q=alice&game_id=justdice'
+curl -s 'localhost:8080/v1/search/players?q=ali&level=5'
+```
+
+## Transactional Outbox & DLQ
+
+To prevent dual-write anomalies across distributed microservices, state mutations atomically enqueue events into a transactional outbox. A background or on-demand dispatcher flushes events to the message broker (`EventBus`) with exponential backoff and dead-letter queue (DLQ) quarantine:
+
+```bash
+# enqueue an event
+curl -s -X POST localhost:8080/v1/outbox/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"patient.appointment_booked","payload":{"practice_id":"p101","patient_id":"pat_202"},"max_attempts":3}'
+
+# flush pending events to the event bus
+curl -s -X POST localhost:8080/v1/outbox/flush
+
+# inspect outbox statistics (enqueued, pending, published, dead-letter, retries)
+curl -s localhost:8080/v1/outbox/stats
+
+# inspect dead-lettered events
+curl -s localhost:8080/v1/outbox/dead_letters
+
+# replay a quarantined dead-letter event
+curl -s -X POST localhost:8080/v1/outbox/dead_letters/{id}/replay
+```
+
 ## Architecture
 
 ```mermaid
@@ -162,11 +234,13 @@ GitHub Actions runs:
 
 ## Test coverage
 
-33 Go test functions (42 cases including validation subtests) cover idempotency, double-entry
+43 Go test functions (57 cases including validation subtests) cover idempotency, double-entry
 postings, insufficient funds, concurrent capture, the HTTP flow, validation, Open Banking
 consent/payment/idempotency and GET endpoints, GraphQL, Prometheus, the event bus, PostgreSQL audit
-store, tiered rating, proration, tax rounding, invoice idempotency and ledger posting. Local
-statement coverage is **63.6%**; CI fails below 56%. The coverage number is deliberately published as a floor, not a quality claim:
+store, tiered rating, proration, tax rounding, invoice idempotency and ledger posting, loyalty
+earn/redeem idempotency and conflict, redeem-insufficient, leaderboard ordering, search
+prefix/filters, concurrent earn, audit entries, and the loyalty HTTP flow. Local
+statement coverage is **68.7%**; CI fails below 56%. The coverage number is deliberately published as a floor, not a quality claim:
 the in-memory ledger, cloud event-bus adapters, and `main` remain the largest uncovered areas.
 
 ## Limitations
