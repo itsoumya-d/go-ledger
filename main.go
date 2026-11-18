@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,12 @@ import (
 
 type fundRequest struct {
 	AmountCents int64 `json:"amount_cents"`
+}
+
+type createSubscriptionRequest struct {
+	AccountID string `json:"account_id"`
+	PlanID    string `json:"plan_id"`
+	TrialDays int    `json:"trial_days"`
 }
 
 type createIntentRequest struct {
@@ -73,6 +80,7 @@ func newServer(store *Store) http.Handler {
 	}
 	openBanking := NewOpenBankingService(store, bus, audit)
 	rating := NewRatingService()
+	subscriptions := NewSubscriptionService(os.Getenv("STRIPE_WEBHOOK_SECRET"))
 	metrics := NewMetrics()
 
 	mux := http.NewServeMux()
@@ -181,6 +189,77 @@ func newServer(store *Store) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, invoice)
+	})
+
+	mux.HandleFunc("POST /v1/subscriptions", func(w http.ResponseWriter, r *http.Request) {
+		var req createSubscriptionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, ErrInvalid)
+			return
+		}
+		sub, created, err := subscriptions.CreateSubscription(
+			r.Header.Get("Idempotency-Key"),
+			req.AccountID,
+			req.PlanID,
+			req.TrialDays,
+		)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, sub)
+	})
+
+	mux.HandleFunc("GET /v1/subscriptions/{subID}", func(w http.ResponseWriter, r *http.Request) {
+		sub, err := subscriptions.GetSubscription(r.PathValue("subID"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, sub)
+	})
+
+	mux.HandleFunc("GET /v1/accounts/{accountID}/entitlements", func(w http.ResponseWriter, r *http.Request) {
+		plan := r.URL.Query().Get("plan_id")
+		ok, err := subscriptions.VerifyEntitlement(r.PathValue("accountID"), plan)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"account_id": r.PathValue("accountID"),
+			"entitled":   ok,
+			"plan_id":    plan,
+		})
+	})
+
+	mux.HandleFunc("POST /v1/webhooks/stripe", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, ErrInvalid)
+			return
+		}
+		sig := r.Header.Get("Stripe-Signature")
+		if sig == "" {
+			sig = r.Header.Get("X-Signature")
+		}
+		evtID, processed, err := subscriptions.ProcessWebhookEvent(sig, body)
+		if err != nil {
+			if errors.Is(err, ErrInvalidSignature) {
+				writeError(w, ErrUnauthorized)
+				return
+			}
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"event_id":  evtID,
+			"processed": processed,
+		})
 	})
 
 	mux.Handle("/graphql", graphQLHandler(store))
