@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestOpenBankingConsentAndIdempotentPayment(t *testing.T) {
@@ -185,5 +186,98 @@ func TestStoreIntentLookup(t *testing.T) {
 	}
 	if _, ok := store.Intent("missing"); ok {
 		t.Fatal("missing intent returned ok")
+	}
+}
+
+func TestOpenBankingVrpConsentAndLimitEnforcement(t *testing.T) {
+	store := NewStore()
+	if err := store.Fund("acct_vrp", 5000); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewOpenBankingService(store, NewMemoryBus(8), nil)
+	handler := openBankingHandler(svc)
+
+	// Test HTTP VRP Consent Creation
+	validUntil := time.Now().Add(24 * time.Hour).Format(time.RFC3339)
+	consentReq, _ := json.Marshal(map[string]any{
+		"account_id":                  "acct_vrp",
+		"max_individual_amount_cents": 500,
+		"periodic_limit_cents":       1000,
+		"valid_until":                 validUntil,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/openbanking/v1/vrp-consents", bytes.NewReader(consentReq))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("vrp consent status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var vrpConsent VrpConsent
+	if err := json.Unmarshal(rec.Body.Bytes(), &vrpConsent); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test GET VRP Consent
+	getReq := httptest.NewRequest(http.MethodGet, "/openbanking/v1/vrp-consents/"+vrpConsent.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer dev-token")
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get vrp consent status = %d", getRec.Code)
+	}
+
+	// 1. Successful payment under limits
+	payReq, _ := json.Marshal(map[string]any{
+		"consent_id":   vrpConsent.ID,
+		"account_id":   "acct_vrp",
+		"amount_cents": 400,
+		"currency":     "USD",
+	})
+	sendPay := func(key string, body []byte) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/openbanking/v1/vrp-payments", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer dev-token")
+		r.Header.Set("Idempotency-Key", key)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+
+	res1 := sendPay("vrp-key-1", payReq)
+	if res1.Code != http.StatusCreated {
+		t.Fatalf("vrp pay1 status = %d, body = %s", res1.Code, res1.Body.String())
+	}
+	// Replay returns OK
+	res1Replay := sendPay("vrp-key-1", payReq)
+	if res1Replay.Code != http.StatusOK {
+		t.Fatalf("vrp pay1 replay status = %d", res1Replay.Code)
+	}
+
+	// 2. Individual amount cap exceeded (600 > 500 max individual)
+	_, _, errExceed := svc.CreateVrpPayment("vrp-key-ind", vrpConsent.ID, "acct_vrp", 600, "USD")
+	if errExceed != ErrVrpMaxIndividualAmountExceeded {
+		t.Fatalf("expected ErrVrpMaxIndividualAmountExceeded, got %v", errExceed)
+	}
+
+	// 3. Second valid payment (400), bringing cumulative spend to 800 <= 1000
+	pay2, _, errPay2 := svc.CreateVrpPayment("vrp-key-2", vrpConsent.ID, "acct_vrp", 400, "USD")
+	if errPay2 != nil || pay2.Status != "completed" {
+		t.Fatalf("pay2 error: %v", errPay2)
+	}
+
+	// 4. Periodic cumulative limit exceeded (800 + 300 = 1100 > 1000 limit)
+	_, _, errPeriod := svc.CreateVrpPayment("vrp-key-3", vrpConsent.ID, "acct_vrp", 300, "USD")
+	if errPeriod != ErrVrpPeriodicLimitExceeded {
+		t.Fatalf("expected ErrVrpPeriodicLimitExceeded, got %v", errPeriod)
+	}
+
+	// 5. Expired consent
+	expiredConsent, err := svc.CreateVrpConsent("acct_vrp", 500, 1000, time.Now().Add(10*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	_, _, errExp := svc.CreateVrpPayment("vrp-key-exp", expiredConsent.ID, "acct_vrp", 100, "USD")
+	if errExp != ErrVrpConsentExpired {
+		t.Fatalf("expected ErrVrpConsentExpired, got %v", errExp)
 	}
 }

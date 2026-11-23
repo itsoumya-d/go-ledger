@@ -13,10 +13,13 @@ import (
 )
 
 var (
-	ErrUnauthorized         = errors.New("unauthorized")
-	ErrConsentNotFound      = errors.New("consent not found")
-	ErrConsentNotAuthorised = errors.New("consent is not authorised")
-	ErrPaymentNotFound      = errors.New("payment not found")
+	ErrUnauthorized                   = errors.New("unauthorized")
+	ErrConsentNotFound                = errors.New("consent not found")
+	ErrConsentNotAuthorised           = errors.New("consent is not authorised")
+	ErrPaymentNotFound                = errors.New("payment not found")
+	ErrVrpMaxIndividualAmountExceeded = errors.New("vrp individual amount exceeds consent max limit")
+	ErrVrpPeriodicLimitExceeded       = errors.New("vrp periodic amount exceeds consent periodic limit")
+	ErrVrpConsentExpired              = errors.New("vrp consent has expired")
 )
 
 type Consent struct {
@@ -25,6 +28,17 @@ type Consent struct {
 	Permissions []string  `json:"permissions"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type VrpConsent struct {
+	ID                       string    `json:"vrp_consent_id"`
+	AccountID                string    `json:"account_id"`
+	MaxIndividualAmountCents int64     `json:"max_individual_amount_cents"`
+	PeriodicLimitCents       int64     `json:"periodic_limit_cents"`
+	PeriodicSpendCents       int64     `json:"periodic_spend_cents"`
+	ValidUntil               time.Time `json:"valid_until"`
+	Status                   string    `json:"status"`
+	CreatedAt                time.Time `json:"created_at"`
 }
 
 type Payment struct {
@@ -45,6 +59,7 @@ type OpenBankingService struct {
 	bus           EventBus
 	audit         *PostgresAuditStore
 	consents      map[string]*Consent
+	vrpConsents   map[string]*VrpConsent
 	payments      map[string]*Payment
 	paymentsByKey map[string]string
 }
@@ -55,6 +70,7 @@ func NewOpenBankingService(store *Store, bus EventBus, audit *PostgresAuditStore
 		bus:           bus,
 		audit:         audit,
 		consents:      make(map[string]*Consent),
+		vrpConsents:   make(map[string]*VrpConsent),
 		payments:      make(map[string]*Payment),
 		paymentsByKey: make(map[string]string),
 	}
@@ -86,6 +102,109 @@ func (s *OpenBankingService) GetConsent(id string) (*Consent, error) {
 		return nil, ErrConsentNotFound
 	}
 	return c, nil
+}
+
+func (s *OpenBankingService) CreateVrpConsent(accountID string, maxIndividual, periodicLimit int64, validUntil time.Time) (*VrpConsent, error) {
+	if accountID == "" || maxIndividual <= 0 || periodicLimit < maxIndividual {
+		return nil, fmt.Errorf("%w: invalid vrp limits", ErrInvalid)
+	}
+	if validUntil.Before(time.Now()) {
+		return nil, fmt.Errorf("%w: valid_until must be in the future", ErrInvalid)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := &VrpConsent{
+		ID:                       fmt.Sprintf("vrp_consent_%d", len(s.vrpConsents)+1),
+		AccountID:                accountID,
+		MaxIndividualAmountCents: maxIndividual,
+		PeriodicLimitCents:       periodicLimit,
+		PeriodicSpendCents:       0,
+		ValidUntil:               validUntil,
+		Status:                   "authorised",
+		CreatedAt:                time.Now().UTC(),
+	}
+	s.vrpConsents[c.ID] = c
+	s.record("vrp_consent.created", map[string]any{
+		"vrp_consent_id": c.ID, "account_id": accountID,
+		"max_individual": maxIndividual, "periodic_limit": periodicLimit,
+	})
+	return c, nil
+}
+
+func (s *OpenBankingService) GetVrpConsent(id string) (*VrpConsent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.vrpConsents[id]
+	if !ok {
+		return nil, ErrConsentNotFound
+	}
+	return c, nil
+}
+
+func (s *OpenBankingService) CreateVrpPayment(key, consentID, accountID string, amount int64, currency string) (*Payment, bool, error) {
+	if key == "" {
+		return nil, false, fmt.Errorf("%w: Idempotency-Key header is required", ErrInvalid)
+	}
+	if err := validate(accountID, amount, currency); err != nil {
+		return nil, false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existingID, ok := s.paymentsByKey[key]; ok {
+		existing := s.payments[existingID]
+		if existing.ConsentID != consentID || existing.AccountID != accountID || existing.AmountCents != amount || existing.Currency != currency {
+			return nil, false, ErrIdempotencyConflict
+		}
+		return existing, false, nil
+	}
+
+	consent, ok := s.vrpConsents[consentID]
+	if !ok {
+		return nil, false, ErrConsentNotFound
+	}
+	if consent.Status != "authorised" {
+		return nil, false, ErrConsentNotAuthorised
+	}
+	if time.Now().After(consent.ValidUntil) {
+		return nil, false, ErrVrpConsentExpired
+	}
+	if amount > consent.MaxIndividualAmountCents {
+		return nil, false, ErrVrpMaxIndividualAmountExceeded
+	}
+	if consent.PeriodicSpendCents+amount > consent.PeriodicLimitCents {
+		return nil, false, ErrVrpPeriodicLimitExceeded
+	}
+
+	intent, _, err := s.store.CreateIntent("openbanking:vrp:"+key, accountID, amount, currency)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := s.store.Capture(intent.ID); err != nil {
+		return nil, false, err
+	}
+
+	consent.PeriodicSpendCents += amount
+
+	p := &Payment{
+		ID:             fmt.Sprintf("payment_%d", len(s.payments)+1),
+		ConsentID:      consentID,
+		AccountID:      accountID,
+		IntentID:       intent.ID,
+		AmountCents:    amount,
+		Currency:       currency,
+		Status:         "completed",
+		IdempotencyKey: key,
+		CreatedAt:      time.Now().UTC(),
+	}
+	s.payments[p.ID] = p
+	s.paymentsByKey[key] = p.ID
+	s.record("vrp_payment.completed", map[string]any{
+		"payment_id": p.ID, "consent_id": consentID, "account_id": accountID,
+		"amount_cents": amount, "currency": currency, "periodic_spend": consent.PeriodicSpendCents,
+	})
+	return p, true, nil
 }
 
 // CreatePayment is idempotent and settles synchronously through the double-entry
@@ -245,6 +364,62 @@ func openBankingHandler(svc *OpenBankingService) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, p)
+	})
+
+	mux.HandleFunc("POST /openbanking/v1/vrp-consents", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			AccountID                string `json:"account_id"`
+			MaxIndividualAmountCents int64  `json:"max_individual_amount_cents"`
+			PeriodicLimitCents       int64  `json:"periodic_limit_cents"`
+			ValidUntil               string `json:"valid_until"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, ErrInvalid)
+			return
+		}
+		validUntil, err := time.Parse(time.RFC3339, req.ValidUntil)
+		if err != nil {
+			writeError(w, fmt.Errorf("%w: invalid valid_until timestamp format", ErrInvalid))
+			return
+		}
+		c, err := svc.CreateVrpConsent(req.AccountID, req.MaxIndividualAmountCents, req.PeriodicLimitCents, validUntil)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, c)
+	})
+
+	mux.HandleFunc("GET /openbanking/v1/vrp-consents/{consentID}", func(w http.ResponseWriter, r *http.Request) {
+		c, err := svc.GetVrpConsent(r.PathValue("consentID"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, c)
+	})
+
+	mux.HandleFunc("POST /openbanking/v1/vrp-payments", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ConsentID   string `json:"consent_id"`
+			AccountID   string `json:"account_id"`
+			AmountCents int64  `json:"amount_cents"`
+			Currency    string `json:"currency"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, ErrInvalid)
+			return
+		}
+		p, created, err := svc.CreateVrpPayment(r.Header.Get("Idempotency-Key"), req.ConsentID, req.AccountID, req.AmountCents, req.Currency)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
+		}
+		writeJSON(w, status, p)
 	})
 
 	mux.HandleFunc("GET /openbanking/v1/accounts/{accountID}/balance", func(w http.ResponseWriter, r *http.Request) {
